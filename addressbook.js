@@ -1,17 +1,29 @@
 function Addressbook() {
     this._initUI();
 };
+Addressbook.prototype._log = function(message) {
+    $('<p/>').text(message).appendTo('#message');
+};
 Addressbook.prototype._initUI = function() {
     var that = this;
-    var numInputs = 30;
-    for (var i = 0; i < numInputs; i++) {
-       $('#addresstable tbody').append(
-              '<tr>' +
-                  '<td><input class="input-firstname"></input></td>' +
-                  '<td><input class="input-lastname"></input></td>' +
-                  '<td><textarea class="input-details"></textarea></td>' +
-              '</tr>');
-    }
+    $('#fileInput').change(function() {
+        var input = $('#fileInput')[0];
+        if (!input.files || !input.files[0]) {
+            that._log("Please select a file.");
+            return;
+        }
+        var file = input.files[0];
+        var fileReader = new FileReader();
+        fileReader.onload = function() {
+            that._clearVCards();
+            VCF.parse(fileReader.result, that._addVCard, that);
+        };
+        fileReader.readAsText(input.files[0]);
+    });
+    $('.import').click(function() {
+        var data = JSON.stringify(that.getData());
+        window.open('data:text/json;charset=utf-8,' + escape(data));
+    });
     $('.export').click(function() {
         var data = JSON.stringify(that.getData());
         window.open('data:text/json;charset=utf-8,' + escape(data));
@@ -20,20 +32,36 @@ Addressbook.prototype._initUI = function() {
         that.createPDF(that.getData());
     });
 };
+Addressbook.prototype._clearVCards = function() {
+    this._vcards = [];
+};
+Addressbook.prototype._addVCard = function(vcard) {
+    this._vcards.push(vcard);
+};
 Addressbook.prototype.getData = function() {
-    var data = [];
-    $('#addresstable tr').each(function() {
-        var firstname = $('.input-firstname', this).val();
-        var lastname = $('.input-lastname', this).val();
-        var details = $('.input-details', this).val();
-        if ((firstname != '' && firstname != undefined) ||
-                (lastname != '' && lastname != undefined) ||
-                (details != '' && details != undefined))
-            data.push({firstname: firstname,
-                       lastname: lastname,
-                       details: details});
+    var that = this;
+    return $.map(this._vcards, function(vcard) {
+        var firstname = '';
+        var lastname = '';
+        var details = '';
+
+        if (vcard.tel)
+           $.each(vcard.tel, function(i, tel) { details += tel.value + '\n'; });
+        if (vcard.email)
+           $.each(vcard.email, function(i, email) { details += email.value + '\n'; });
+        if (vcard.adr) {
+            var fields = vcard.adr.value.split(';');
+            details += fields[2] + "\n" + fields[5] + " " + fields[3] + "\n";
+        }
+        if (vcard.n && vcard.n['given-name'])
+            firstname = vcard.n['given-name'][0];
+        if (vcard.n && vcard.n['family-name'])
+            lastname = vcard.n['family-name'][0];
+
+        return {firstname: firstname,
+                lastname: lastname,
+                details: details};
     });
-    return data;
 };
 Addressbook.prototype.createPDF = function(data) {
     // A4 page
@@ -58,7 +86,12 @@ Addressbook.prototype.createPDF = function(data) {
     doc.output('datauri');
 };
 Addressbook.prototype.sort = function(data) {
-    return data; // todo
+    data.sort(function(a, b) {
+        a = [a.lastname, a.firstname];
+        b = [b.lastname, b.firstname];
+        return a < b ? -1 : 1;
+    });
+    return data;
 };
 Addressbook.prototype.splitIntoPages = function(doc, options, data) {
     var pages = [];
