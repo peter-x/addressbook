@@ -43,15 +43,16 @@ Addressbook.prototype.getData = function() {
     return $.map(this._vcards, function(vcard) {
         var firstname = '';
         var lastname = '';
-        var details = '';
+        var details = [];
 
         if (vcard.tel)
-           $.each(vcard.tel, function(i, tel) { details += tel.value + '\n'; });
+           $.each(vcard.tel, function(i, tel) { details.push(tel.value); });
         if (vcard.email)
-           $.each(vcard.email, function(i, email) { details += email.value + '\n'; });
+           $.each(vcard.email, function(i, email) { details.push(email.value); });
         if (vcard.adr) {
             var fields = vcard.adr.value.split(';');
-            details += fields[2] + "\n" + fields[5] + " " + fields[3] + "\n";
+            details.push(fields[2]);
+            details.push(fields[5] + " " + fields[3]);
         }
         if (vcard.n && vcard.n['given-name'])
             firstname = vcard.n['given-name'][0];
@@ -60,14 +61,14 @@ Addressbook.prototype.getData = function() {
 
         return {firstname: firstname,
                 lastname: lastname,
-                details: details};
+                details: details.join('\n')};
     });
 };
 Addressbook.prototype.createPDF = function(data) {
     // A4 page
     var doc = new jsPDF('p', 'cm', [21, 29.7]);
     var options = {
-        font: {fontSize: 12, fontStyle: '', fontName: 'Helvetica'},
+        font: {fontSize: 12, fontName: 'times'},
         // borders inside a small page in cm
         // left and right is inverted for odd sheets
         borderLeft: 1.2,
@@ -77,8 +78,6 @@ Addressbook.prototype.createPDF = function(data) {
         // size of a small page in cm
         pageWidth: 8.4,
         pageHeight: 11.4};
-    doc.setFont(options.font.fontName, options.font.fontStyle);
-    doc.setFontSize(options.font.fontSize);
 
     var pages = this.splitIntoPages(doc, options, this.sort(data));
     this.renderOnSheets(doc, options, pages);
@@ -100,24 +99,49 @@ Addressbook.prototype.splitIntoPages = function(doc, options, data) {
     }
     return pages;
 };
+Addressbook.prototype.setFont = function(doc, font, fontModifications) {
+    doc.setFont(fontModifications.fontName || font.fontName,
+                fontModifications.fontStyle || font.fontStyle);
+    doc.setFontSize(fontModifications.fontSize || font.fontSize);
+};
+Addressbook.prototype.getLineHeight = function(doc) {
+    return doc.internal.getLineHeight() / 28.125; // pt per cm
+};
+Addressbook.prototype.splitTextToLines = function(doc, text, maxWidth, font, fontModifications) {
+    this.setFont(doc, font, fontModifications);
+    var lines = doc.splitTextToSize(text, maxWidth);
+    return {'height': lines.length * this.getLineHeight(doc),
+            'lines': lines};
+};
 Addressbook.prototype.getNextPage = function(doc, options, data) {
-    var spacer = .3;
+    var that = this;
+    var minSpacer = .3;
     var maxWidth = options.pageWidth - options.borderLeft - options.borderRight;
     var maxHeight = options.pageHeight - options.borderTop - options.borderBottom;
-    var lineHeight = doc.internal.getLineHeight() / 28.125; // pt per cm
-    var offsetVer = 0;
+    var heightUsed = 0;
     var page = [];
-    while (offsetVer < maxHeight && data.length > 0) {
-        var text = data[0].firstname + ' ' + data[0].lastname + '\n' +
-                   data[0].details;
-        var lines = doc.splitTextToSize(text, maxWidth);
-        if (offsetVer + lines.length * lineHeight > maxHeight && page.length > 0)
+    var headingMods = {'fontStyle': 'bold'};
+    var bodyMods = {'fontStyle': 'normal'};
+    while (heightUsed < maxHeight && data.length > 0) {
+        var headingText = data[0].firstname + ' ' + data[0].lastname;
+        var heading = this.splitTextToLines(doc, headingText, maxWidth, options.font, headingMods);
+        var bodyText = data[0].details;
+        var body = this.splitTextToLines(doc, bodyText, maxWidth, options.font, bodyMods);
+        if (heightUsed + heading.height + body.height > maxHeight && page.length > 0)
             break;
-        page.push({"y": offsetVer,
-                   "t": lines});
-                   
+        page.push({"height": heading.height + body.height,
+                   "heading": heading,
+                   "body": body,
+                   "render": function(doc, x, y) {
+                       var baselinePos = that.getLineHeight(doc) * .7; // approx, position of baseline
+                       that.setFont(doc, options.font, headingMods);
+                       doc.text(x, y + baselinePos, this.heading.lines);
+                       that.setFont(doc, options.font, bodyMods);
+                       doc.text(x, y + baselinePos + this.heading.height, this.body.lines);
+                   }});
+
         data.shift();
-        offsetVer += (lines.length + spacer) * lineHeight;
+        heightUsed += heading.height + body.height + minSpacer;
     }
     return page;
 };
@@ -160,6 +184,7 @@ Addressbook.prototype.renderSheet = function(doc, options, border, sheet) {
     doc.setLineWidth(.01);
     doc.setDrawColor(0, 0, 0, .5);
 
+    var maxPageHeight = options.pageHeight - options.borderTop - options.borderBottom;
     for (var i = 0; i < sheet.length; i++) {
         doc.rect(sheet[i].x,
                  sheet[i].y,
@@ -167,17 +192,24 @@ Addressbook.prototype.renderSheet = function(doc, options, border, sheet) {
                  options.pageHeight,
                  'D');
         this.renderPage(doc,
+                        maxPageHeight,
                         sheet[i].p,
                         sheet[i].x + border,
                         sheet[i].y + options.borderTop);
     }
 };
-Addressbook.prototype.renderPage = function(doc, page, x, y) {
-    for (var i = 0; i < page.length; i++) {
-        doc.text(x,
-                 page[i].y + y,
-                 page[i].t);
+Addressbook.prototype.renderPage = function(doc, maxPageHeight, page, x, y) {
+    var space = 0;
+    if (page.length >= 2) {
+        space = maxPageHeight;
+        $.each(page, function(i, entry) { space -= entry.height; });
+        space /= page.length - 1;
     }
+
+    $.each(page, function(i, entry) {
+        entry.render(doc, x, y);
+        y += entry.height + space;
+    });
 }
 
 var addressbook;
